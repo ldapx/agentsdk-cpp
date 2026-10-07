@@ -1,6 +1,6 @@
 # AgentSDK C++
 
-A small, dependency-light C++20 SDK for talking to AI agents over two
+A small, dependency-light C++20 SDK for talking to AI agents over three
 standard protocols:
 
 - **A2A** (Agent-to-Agent, [a2a-protocol](https://a2a-protocol.org)) — agent
@@ -9,6 +9,10 @@ standard protocols:
 - **ACP** (Agent Client Protocol) — driving a local coding agent as a
   subprocess over newline-delimited JSON-RPC on stdio, with session state,
   tool-call updates and permission prompts.
+- **MCP** (Model Context Protocol,
+  [modelcontextprotocol.io](https://modelcontextprotocol.io)) — consuming
+  tools, resources and prompts from an MCP server subprocess, and hosting
+  them for external MCP clients, over newline-delimited JSON-RPC on stdio.
 
 The library is a plain static library with no editor or UI dependencies: you
 link it into any C++20 program.
@@ -32,23 +36,44 @@ link it into any C++20 program.
     notifications, agent-initiated requests and permission prompts.
   - `acp_session` layers a conversation on top of `acp_client`, and
     `acp_agent_manager` discovers agents on `PATH` and launches them.
+- **MCP client & server** for stdio servers (protocol `2025-06-18`, with
+  fallback to `2025-03-26` / `2024-11-05` during version negotiation).
+  - `initialize` handshake plus `notifications/initialized`, capability
+    negotiation and `ping`.
+  - Tools (`tools/list` with pagination helpers, `tools/call` with
+    `isError` results), resources (`resources/list`, `resources/read`,
+    `resources/templates/list`, subscribe/unsubscribe), prompts
+    (`prompts/list`, `prompts/get`), `completion/complete` and
+    `logging/setLevel` with `notifications/message` delivery.
+  - Server-to-client requests in both directions: `sampling/createMessage`,
+    `roots/list` and `elicitation/create`, answered on a dispatch thread.
+  - Progress (`notifications/progress`) and cancellation
+    (`notifications/cancelled`) notifications; timed-out requests emit
+    cancellation automatically.
 - **JSON layer** built on simdjson, with bidirectional serialization between
-  the protocol types and `simdjson::dom::element` (`a2a/json_util.hpp`).
+  the protocol types and `simdjson::dom::element` (`a2a/json_util.hpp`,
+  `mcp/mcp_json.hpp`), and a shared `agentsdk::json_builder` plus a shared
+  `result<T, error>` type with no exceptions in the protocol paths.
 
 ## Project structure
 
 ```
 agentsdk-cpp/
 ├── src/agentsdk/
+│   ├── common/              # Shared result<T,E>, JSON builder, stdio
+│   │                       # JSON-RPC subprocess base
 │   ├── a2a/                 # Agent-to-Agent protocol
 │   │   └── http/            # HTTP client transport, server and listener,
 │   │                       # JSON-RPC server
-│   └── acp/                 # Agent Client Protocol
-└── tests/agentsdk-core/     # doctest suites + fake ACP agent binary
+│   ├── acp/                 # Agent Client Protocol
+│   └── mcp/                 # Model Context Protocol (client + server)
+└── tests/agentsdk-core/     # doctest suites + fake ACP/MCP binaries
 ```
 
-Public headers are included as `<agentsdk/a2a/...>` and `<agentsdk/acp/...>`;
-everything lives in namespace `agentsdk::a2a` / `agentsdk::acp`.
+Public headers are included as `<agentsdk/a2a/...>`, `<agentsdk/acp/...>`
+and `<agentsdk/mcp/...>`; everything lives in namespace `agentsdk::a2a` /
+`agentsdk::acp` / `agentsdk::mcp`, with shared utilities directly under
+`agentsdk::`.
 
 ## Building
 
@@ -82,16 +107,15 @@ package("agentsdk")
     set_description("AgentSDK C++ — A2A and ACP client SDK")
     set_license("MIT")
     add_urls("https://github.com/ldapx/agentsdk-cpp.git")
-    add_versions("main", "main")
+    add_versions("dev", "dev")
     on_install(function (package)
         io.writefile("xmake.lua", [[
             add_rules("mode.debug", "mode.release")
             set_languages("c++20")
-            add_requires("spdlog v1.17.0", "libcurl", "simdjson v4.6.2")
+            add_requires("spdlog", "libcurl", "simdjson")
             target("agentsdk")
                 set_kind("static")
                 add_files("src/agentsdk/**.cpp")
-                add_headerfiles("src/agentsdk/(a2a/**.hpp, acp/**.hpp)")
                 add_includedirs("src", {public = true})
                 add_packages("spdlog", "libcurl", "simdjson", {public = true})
                 if is_plat("linux") then
@@ -101,9 +125,13 @@ package("agentsdk")
                 end
         ]])
         import("package.tools.xmake").install(package)
+        -- Preserve the src/agentsdk/... layout under include/ so consumers
+        -- keep using <agentsdk/a2a/...>. add_headerfiles would flatten every
+        -- header into a single include/ directory.
+        os.cp("src/agentsdk", package:installdir("include"))
     end)
     on_load(function (package)
-        package:add("includedirs", "src")
+        package:add("includedirs", "include")
     end)
 package_end()
 ```
@@ -118,7 +146,9 @@ target("myapp")
 
 `simdjson` and `libcurl` are exported as public packages because their types
 appear in the public headers (`a2a/json_util.hpp`, `a2a/http/http_client.hpp`).
-`spdlog` is used internally only and is not exposed through the public headers.
+`spdlog` is used internally only and is not exposed through the public headers;
+if you link a compiled spdlog, export `SPDLOG_COMPILED_LIB` yourself so the SDK
+TUs agree with yours.
 
 ## Examples
 
@@ -154,6 +184,66 @@ int main ()
 `acp_session::set_update_handler` as raw JSON params; `acp_types.hpp` provides
 the matching structs (`tool_call_update`, `plan_entry`, `usage_update`) for the
 individual update kinds.
+
+### MCP — call tools on a local server
+
+```cpp
+#include <agentsdk/mcp/mcp_client.hpp>
+
+using namespace agentsdk::mcp;
+
+int main ()
+{
+  mcp_client client;
+  if (!client.launch_server ("my-mcp-server", {}))
+    return 1;
+
+  implementation_info info{ .name = "myapp", .version = "1.0" };
+  client_capabilities caps;
+  caps.sampling = true;
+  caps.elicitation = true;
+
+  auto init = client.initialize (info, caps);
+  if (!init)
+    return 1;
+
+  auto tools = client.list_all_tools ();
+  if (!tools)
+    return 1;
+
+  auto result = client.call_tool ("get_weather", R"({"location":"NYC"})");
+  if (!result || result->is_error)
+    return 1;
+  return 0;
+}
+```
+
+### MCP — host tools for external clients
+
+```cpp
+#include <agentsdk/mcp/mcp_server.hpp>
+
+using namespace agentsdk::mcp;
+
+int main ()
+{
+  implementation_info info{ .name = "my-server", .version = "1.0" };
+  server_capabilities caps;
+  caps.tools = tools_capability{};
+
+  mcp_server server{ info, caps };
+  server.set_list_tools_handler ([](const std::optional<std::string> &) {
+    tools_list_result page;
+    tool t;
+    t.name = "ping";
+    t.input_schema = "{}";
+    page.tools.push_back (t);
+    return agentsdk::result<tools_list_result, mcp_error>{ page };
+  });
+  server.run (); // reads stdin, writes stdout until EOF
+  return 0;
+}
+```
 
 ### A2A — call a remote agent
 
@@ -202,10 +292,13 @@ server.stop ();
 ## Platform support
 
 Linux and macOS are the primary targets. The A2A listener
-(`a2a/http/http_listener.*`), the ACP subprocess management
-(`acp/acp_client.*`) and the discovery scanner (`acp/acp_agent_manager.*`)
+(`a2a/http/http_listener.*`), the subprocess management
+(`common/stdio_json_rpc.*`, used by `acp/acp_client.*`,
+`mcp/mcp_client.*` and `mcp/mcp_server.*`) and the discovery scanner
+(`acp/acp_agent_manager.*`)
 use POSIX APIs (`fork`/`pipe`/`select`, `PATH` scanning) without platform
-guards today, so those three areas need porting before Windows builds.
+guards today, so those areas need porting before Windows builds. Only the
+stdio transport is implemented for MCP; Streamable HTTP is not.
 
 ## Code style
 

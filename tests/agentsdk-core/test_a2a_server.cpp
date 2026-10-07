@@ -18,6 +18,7 @@
 #include <string>
 #include <thread>
 
+using namespace agentsdk;
 using namespace agentsdk::a2a;
 
 namespace
@@ -147,8 +148,7 @@ TEST_CASE ("a2a_server binds a socket and serves the agent card")
 
   REQUIRE (response.empty () == false);
   CHECK (response.find ("HTTP/1.1 200 OK") != std::string::npos);
-  CHECK (response.find ("Content-Type: application/json")
-         != std::string::npos);
+  CHECK (response.find ("Content-Type: application/json") != std::string::npos);
   CHECK (response.find ("Smoke Test Agent") != std::string::npos);
 
   server.stop ();

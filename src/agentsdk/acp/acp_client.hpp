@@ -1,18 +1,16 @@
 #pragma once
 
 #include <agentsdk/acp/acp_types.hpp>
+#include <agentsdk/common/stdio_json_rpc.hpp>
 
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <vector>
 
 namespace agentsdk::acp
@@ -25,15 +23,19 @@ namespace agentsdk::acp
  * plus asynchronous notification handling.
  *
  * Messages are newline-delimited JSON-RPC as required by ACP v1.
+ *
+ * The subprocess plumbing and request/response correlation come from
+ * :cpp:class:`agentsdk::stdio_json_rpc`; this class adds the ACP message
+ * routing on top.
  */
-class acp_client
+class acp_client : private stdio_json_rpc
 {
 public:
   using notification_handler = std::function<void (const std::string &method,
                                                    const std::string &params)>;
 
   acp_client ();
-  ~acp_client ();
+  ~acp_client () override;
 
   acp_client (const acp_client &) = delete;
   acp_client &operator= (const acp_client &) = delete;
@@ -110,29 +112,13 @@ private:
     std::string params;
   };
 
-  void read_loop ();
-  void dispatch_message (const std::string &line);
-  void write_line (const std::string &line);
+  void on_line (const std::string &line) override;
 
+  void dispatch_message (const std::string &line);
   void start_dispatch_thread ();
   void stop_dispatch_thread ();
   void process_dispatch_queue ();
   void handle_incoming_request (const incoming_request &request);
-  void complete_all_pending ();
-
-  // Pipe file descriptors
-  int m_stdin_fd = -1;
-  int m_stdout_fd = -1;
-
-  // Agent process
-  int m_agent_pid = -1;
-
-  // Background reader
-  std::thread m_read_thread;
-  std::atomic<bool> m_running{ false };
-
-  // Write synchronization
-  std::mutex m_write_mutex;
 
   // Notification handler
   notification_handler m_on_notification;
@@ -145,21 +131,6 @@ private:
   std::mutex m_dispatch_mutex;
   std::condition_variable m_dispatch_cv;
   std::deque<incoming_request> m_dispatch_queue;
-
-  // Pending request responses
-  struct pending_request
-  {
-    std::string result;
-    std::string error;
-    bool completed = false;
-  };
-
-  std::mutex m_pending_mutex;
-  std::condition_variable m_pending_cv;
-  std::unordered_map<int64_t, std::shared_ptr<pending_request>> m_pending;
-
-  // Auto-incrementing request ID
-  std::atomic<int64_t> m_next_id{ 1 };
 };
 
 } // namespace agentsdk::acp

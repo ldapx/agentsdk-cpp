@@ -30,7 +30,7 @@ target("agentsdk")
     set_kind("static")
     set_languages("c++20")
     add_files("src/agentsdk/**.cpp")
-    add_headerfiles("src/agentsdk/(a2a/**.hpp, acp/**.hpp)")
+    add_headerfiles("src/agentsdk/**.hpp")
     add_includedirs("src", {public = true})
     -- simdjson and curl types show up in the public headers
     -- (a2a/json_util.hpp, a2a/http/http_client.hpp), so consumers need them.
@@ -54,13 +54,33 @@ target("fake_acp_agent")
     add_files("tests/agentsdk-core/fake_acp_agent.cpp")
     add_packages("simdjson")
 
+-- Standalone fake MCP server used by test_mcp_client.cpp: it speaks
+-- newline-delimited JSON-RPC 2.0 per MCP 2025-06-18 and records
+-- everything it receives in $FAKE_MCP_LOG.
+target("fake_mcp_server")
+    set_kind("binary")
+    set_languages("c++20")
+    add_files("tests/agentsdk-core/fake_mcp_server.cpp")
+    add_packages("simdjson")
+
+-- Real-server test host used by test_mcp_server.cpp: embeds
+-- agentsdk::mcp::mcp_server with scripted handlers.
+target("mcp_test_host")
+    set_kind("binary")
+    set_languages("c++20")
+    add_files("tests/agentsdk-core/mcp_test_host.cpp")
+    add_deps("agentsdk")
+    add_packages("simdjson", "spdlog")
+
 target("agentsdk_core_tests")
     set_kind("binary")
     set_languages("c++20")
     add_files("tests/agentsdk-core/test_*.cpp")
-    add_deps("agentsdk", "fake_acp_agent")
+    add_deps("agentsdk", "fake_acp_agent", "fake_mcp_server", "mcp_test_host")
     add_packages("doctest")
     -- Absolute: `xmake test` runs the binary from a different cwd than the
 -- project root, so a builddir-relative path only works when invoked by hand.
 add_defines("FAKE_AGENT_PATH=\"$(projectdir)/$(builddir)/$(plat)/$(arch)/$(mode)/fake_acp_agent\"")
+add_defines("FAKE_MCP_PATH=\"$(projectdir)/$(builddir)/$(plat)/$(arch)/$(mode)/fake_mcp_server\"")
+add_defines("MCP_TEST_HOST_PATH=\"$(projectdir)/$(builddir)/$(plat)/$(arch)/$(mode)/mcp_test_host\"")
     add_tests("agentsdk_core_tests")

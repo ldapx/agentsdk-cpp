@@ -1,69 +1,13 @@
-#include <agentsdk/a2a/json_util.hpp>
+#include <agentsdk/common/json_builder.hpp>
 
 #include <agentsdk/acp/acp_session.hpp>
 
 #include <spdlog/spdlog.h>
 
-#include <cstdio>
 #include <fstream>
 
 namespace agentsdk::acp
 {
-
-namespace
-{
-
-/**
- * Escape a string as the body of a JSON string literal.
- *
- * json_builder does not perform escaping, so file contents must be
- * sanitized before being embedded in a response.
- */
-std::string
-escape_json_string (const std::string &value)
-{
-  std::string escaped;
-  escaped.reserve (value.size () + 8);
-
-  for (char c : value) {
-    switch (c) {
-    case '"':
-      escaped += "\\\"";
-      break;
-    case '\\':
-      escaped += "\\\\";
-      break;
-    case '\b':
-      escaped += "\\b";
-      break;
-    case '\f':
-      escaped += "\\f";
-      break;
-    case '\n':
-      escaped += "\\n";
-      break;
-    case '\r':
-      escaped += "\\r";
-      break;
-    case '\t':
-      escaped += "\\t";
-      break;
-    default:
-      if (static_cast<unsigned char> (c) < 0x20) {
-        char buffer[7];
-        std::snprintf (buffer, sizeof (buffer), "\\u%04x", c);
-        escaped += buffer;
-      } else {
-        escaped += c;
-      }
-      break;
-    }
-  }
-
-  return escaped;
-}
-
-} // namespace
 
 acp_session::acp_session (acp_client &client) : m_client (client) {}
 
@@ -71,7 +15,7 @@ bool
 acp_session::initialize (const client_capabilities &client_caps,
                          const implementation_info &info)
 {
-  a2a::json_builder jb;
+  json_builder jb;
   jb.begin_object ();
   jb.add_int ("protocolVersion", ACP_PROTOCOL_VERSION);
 
@@ -190,7 +134,7 @@ acp_session::new_session (const std::string &cwd)
     return "";
   }
 
-  a2a::json_builder jb;
+  json_builder jb;
   jb.begin_object ();
   jb.add_string ("cwd", cwd);
   jb.begin_array ("mcpServers");
@@ -332,7 +276,7 @@ acp_session::prompt_with_content (const std::vector<content_block> &content)
     return false;
   }
 
-  a2a::json_builder jb;
+  json_builder jb;
   jb.begin_object ();
   jb.add_string ("sessionId", m_session_id);
 
@@ -372,7 +316,7 @@ acp_session::cancel ()
   if (m_session_id.empty ())
     return;
 
-  a2a::json_builder jb;
+  json_builder jb;
   jb.begin_object ();
   jb.add_string ("sessionId", m_session_id);
   jb.end_object ();
@@ -389,7 +333,7 @@ acp_session::close_session ()
   if (m_session_id.empty ())
     return;
 
-  a2a::json_builder jb;
+  json_builder jb;
   jb.begin_object ();
   jb.add_string ("sessionId", m_session_id);
   jb.end_object ();
@@ -409,7 +353,7 @@ acp_session::set_config_option (const std::string &config_id,
     return {};
   }
 
-  a2a::json_builder jb;
+  json_builder jb;
   jb.begin_object ();
   jb.add_string ("sessionId", m_session_id);
   jb.add_string ("configId", config_id);
@@ -678,7 +622,7 @@ acp_session::handle_permission_request (const std::string &params)
 
   spdlog::info ("[acp] Auto-approving tool call ({})", selected->name);
 
-  a2a::json_builder jb;
+  json_builder jb;
   jb.begin_object ();
   jb.begin_object ("outcome");
   jb.add_string ("outcome", "selected");
@@ -758,9 +702,9 @@ acp_session::handle_fs_read_text_file (const std::string &params)
     }
   }
 
-  a2a::json_builder jb;
+  json_builder jb;
   jb.begin_object ();
-  jb.add_raw_json ("content", "\"" + escape_json_string (content) + "\"");
+  jb.add_string ("content", content);
   jb.end_object ();
 
   response.result_json = jb.str ();
