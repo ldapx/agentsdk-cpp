@@ -4,26 +4,28 @@ A small, dependency-light C++20 SDK for talking to AI agents over two
 standard protocols:
 
 - **A2A** (Agent-to-Agent, [a2a-protocol](https://a2a-protocol.org)) — agent
-  discovery, task submission, status polling and SSE streaming between remote
-  agents.
+  discovery, task submission and status polling against remote agents, plus a
+  server that hosts an agent card and dispatches requests.
 - **ACP** (Agent Client Protocol) — driving a local coding agent as a
   subprocess over newline-delimited JSON-RPC on stdio, with session state,
-  tool-call updates, plans and permission prompts.
+  tool-call updates and permission prompts.
 
-The library has no engine, editor or UI dependencies: it is a plain static
-library you can link into any C++20 program. It was extracted from the
-[Weasel Engine](https://github.com/ldapx/weasel) AI-assistance code and is
-used there for the editor chat panel.
+The library is a plain static library with no editor or UI dependencies: you
+link it into any C++20 program.
 
 ## Features
 
 - **A2A client & server** with a pluggable transport layer.
-  - HTTP + JSON transport (libcurl) with `curl_multi`-based SSE streaming.
+  - HTTP + JSON transport (libcurl) for `message:send`, task lookup, task
+    listing and task cancellation.
   - A dependency-free POSIX listener for the server side — libcurl has no
     server API, so the socket plumbing is ~250 lines rather than a web
     framework.
-  - Agent card discovery at `/.well-known/agent-card.json`, including a
-    well-known-directory walker (`discovery.hpp`).
+  - Agent card discovery at `/.well-known/agent-card.json`, with an optional
+    in-memory TTL cache (`discovery.hpp`).
+  - Streaming is modelled by the `stream_observer` / `stream_handle`
+    interfaces, with an SSE frame parser (`sse_parser`) and an in-process
+    `local_stream`. The HTTP transport's streaming methods are still stubs.
   - An explicit `result<T, error>` type: no exceptions in the protocol paths.
 - **ACP client** for stdio agents.
   - Correlated request/response by JSON-RPC id (never by FIFO position),
@@ -39,7 +41,8 @@ used there for the editor chat panel.
 agentsdk-cpp/
 ├── src/agentsdk/
 │   ├── a2a/                 # Agent-to-Agent protocol
-│   │   └── http/            # HTTP client / server / JSON-RPC transports
+│   │   └── http/            # HTTP client transport, server and listener,
+│   │                       # JSON-RPC server
 │   └── acp/                 # Agent Client Protocol
 └── tests/agentsdk-core/     # doctest suites + fake ACP agent binary
 ```
@@ -51,7 +54,7 @@ everything lives in namespace `agentsdk::a2a` / `agentsdk::acp`.
 
 ### Prerequisites
 
-- **xmake 3.0+**
+- **xmake 2.8.0+**
 - **Clang** (the supported toolchain; GCC also works)
 - **C++20 compatible compiler**
 
@@ -68,18 +71,9 @@ xmake test
 
 ## Using it from another project
 
-### xmake
-
-Declare the dependency from the GitHub URL and link the `agentsdk` package:
-
-```lua
-add_requires("agentsdk")
-target("myapp")
-    add_packages("agentsdk")
-```
-
-If the package is not on xrepo yet, add a local package definition to your
-`xmake.lua`:
+The library is built with xmake and is not published to xrepo yet. Add a
+package definition to your root `xmake.lua` so the target below can be
+required by name:
 
 ```lua
 package("agentsdk")
@@ -93,7 +87,7 @@ package("agentsdk")
         io.writefile("xmake.lua", [[
             add_rules("mode.debug", "mode.release")
             set_languages("c++20")
-            add_requires("spdlog", "libcurl", "simdjson")
+            add_requires("spdlog v1.17.0", "libcurl", "simdjson v4.6.2")
             target("agentsdk")
                 set_kind("static")
                 add_files("src/agentsdk/**.cpp")
@@ -102,6 +96,8 @@ package("agentsdk")
                 add_packages("spdlog", "libcurl", "simdjson", {public = true})
                 if is_plat("linux") then
                     add_syslinks("pthread")
+                elseif is_plat("windows") then
+                    add_syslinks("ws2_32", "wsock32")
                 end
         ]])
         import("package.tools.xmake").install(package)
@@ -112,18 +108,17 @@ package("agentsdk")
 package_end()
 ```
 
+Then require and link it:
+
+```lua
+add_requires("agentsdk")
+target("myapp")
+    add_packages("agentsdk")
+```
+
 `simdjson` and `libcurl` are exported as public packages because their types
 appear in the public headers (`a2a/json_util.hpp`, `a2a/http/http_client.hpp`).
-
-### CMake
-
-The sources are plain C++20 with no generated headers, so `add_subdirectory`
-or a manual `target_sources` works:
-
-```cmake
-add_subdirectory(agentsdk-cpp)
-target_link_libraries(myapp PRIVATE agentsdk)
-```
+`spdlog` is used internally only and is not exposed through the public headers.
 
 ## Examples
 
@@ -155,6 +150,11 @@ int main ()
 }
 ```
 
+`session/update` notifications are delivered to
+`acp_session::set_update_handler` as raw JSON params; `acp_types.hpp` provides
+the matching structs (`tool_call_update`, `plan_entry`, `usage_update`) for the
+individual update kinds.
+
 ### A2A — call a remote agent
 
 ```cpp
@@ -176,8 +176,10 @@ int main ()
   a2a_client client{ std::move (transport) };
 
   send_message_request request;
-  request.message.parts.push_back (part{ .text = "Summarize the last task" });
+  request.msg.role = role::user;
+  request.msg.parts.push_back (part{ .text = "Summarize the last task" });
 
+  // The response is a std::variant<task, message>.
   auto response = client.send_message (request);
   if (response)
     handle (response.value ());
