@@ -1,0 +1,15 @@
+BasedOnStyle: GNU
+Language: Cpp
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass: true
+  AfterEnum: true
+  AfterExternBlock: false
+  AfterFunction: true
+  AfterNamespace: true
+  AfterStruct: true
+  AfterUnion: false
+ColumnLimit: 80
+NamespaceIndentation: None
+ReflowComments: true
+SortIncludes: Never

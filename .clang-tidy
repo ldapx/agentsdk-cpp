@@ -1,0 +1,148 @@
+Checks: >
+  bugprone-*,
+  performance-*,
+  readability-*,
+  misc-*,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-using,
+  modernize-use-bool-literals,
+  modernize-redundant-void-arg,
+  modernize-make-unique,
+  modernize-make-shared,
+  modernize-avoid-bind,
+  -modernize-use-auto,
+  -modernize-loop-convert,
+  -readability-magic-numbers
+
+WarningsAsErrors: ''
+HeaderFilterRegex: '(^|.*/)src/.*'
+ExcludeHeaderFilterRegex: '(.*/)?(_deps|external|third_party|mikktspace)/.*'
+
+CheckOptions:
+
+  # =========================================================
+  # NAMING (core of your style)
+  # =========================================================
+  - key: readability-identifier-naming.DefaultCase
+    value: lower_case
+
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+
+  - key: readability-identifier-naming.ClassCase
+    value: lower_case
+
+  - key: readability-identifier-naming.StructCase
+    value: lower_case
+
+  - key: readability-identifier-naming.EnumCase
+    value: lower_case
+
+  - key: readability-identifier-naming.EnumConstantCase
+    value: lower_case
+
+  - key: readability-identifier-naming.ScopedEnumConstantCase
+    value: lower_case
+
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+
+  - key: readability-identifier-naming.GlobalFunctionCase
+    value: lower_case
+
+  - key: readability-identifier-naming.MethodCase
+    value: lower_case
+
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+
+  - key: readability-identifier-naming.LocalVariableCase
+    value: lower_case
+
+  - key: readability-identifier-naming.GlobalVariableCase
+    value: lower_case
+
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+
+  # Private members: m_
+  - key: readability-identifier-naming.PrivateMemberCase
+    value: lower_case
+
+  - key: readability-identifier-naming.PrivateMemberPrefix
+    value: m_
+
+  - key: readability-identifier-naming.ProtectedMemberCase
+    value: lower_case
+
+  - key: readability-identifier-naming.ProtectedMemberPrefix
+    value: m_
+
+  # Constants
+  - key: readability-identifier-naming.ConstantCase
+    value: lower_case
+
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: lower_case
+
+  - key: readability-identifier-naming.StaticConstantCase
+    value: lower_case
+
+  # Templates (allow T, U, etc.)
+  - key: readability-identifier-naming.TemplateParameterIgnoredRegexp
+    value: '^[A-Z]$'
+
+  # Macros (GCC style)
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+
+  # Allow short loop vars
+  - key: readability-identifier-naming.LocalVariableIgnoredRegexp
+    value: '^[ijk]$'
+
+  # =========================================================
+  # READABILITY / CONTROL FLOW
+  # =========================================================
+  - key: readability-else-after-return.WarnOnUnfixable
+    value: true
+
+  - key: readability-implicit-bool-conversion.AllowIntegerConditions
+    value: false
+
+  - key: readability-implicit-bool-conversion.AllowPointerConditions
+    value: false
+
+  # =========================================================
+  # CONST CORRECTNESS
+  # =========================================================
+  - key: misc-const-correctness.StrictMode
+    value: true
+
+  # =========================================================
+  # PERFORMANCE (safe ones only)
+  # =========================================================
+  - key: performance-unnecessary-value-param.AllowedTypes
+    value: 'std::function'
+
+  # =========================================================
+  # INCLUDES
+  # =========================================================
+  - key: misc-include-cleaner.IgnoreHeaders
+    value: ''
+
+  # =========================================================
+  # MODERNIZE (restricted to your philosophy)
+  # =========================================================
+  - key: modernize-use-nullptr.NullMacros
+    value: 'NULL'
+
+  # =========================================================
+  # BUGPRONE (no config needed, but important group)
+  # =========================================================
+
+  # =========================================================
+  # MISC CLEANUP
+  # =========================================================
+  - key: misc-unused-parameters.IgnoreVirtual
+    value: true
