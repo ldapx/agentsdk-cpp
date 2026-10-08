@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.os }} / ${{ matrix.toolchain }} / ${{ matrix.mode }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Clang is the supported toolchain; GCC must keep working too.
+          # macOS only runs Apple Clang (no system GCC on runners).
+          - os: ubuntu-latest
+            toolchain: clang
+            mode: release
+          - os: ubuntu-latest
+            toolchain: clang
+            mode: debug
+          - os: ubuntu-latest
+            toolchain: gcc
+            mode: release
+          - os: macos-latest
+            toolchain: clang
+            mode: release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      # Third-party packages (spdlog, libcurl, simdjson, doctest) are built
+      # from source by xrepo; cache them across runs.
+      - name: Cache xmake packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.xmake/packages
+          key: ${{ runner.os }}-${{ matrix.toolchain }}-${{ matrix.mode }}-xmake-${{ hashFiles('xmake.lua') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.toolchain }}-${{ matrix.mode }}-xmake-
+
+      - name: Configure
+        run: xmake f --toolchain=${{ matrix.toolchain }} -m ${{ matrix.mode }} -y
+
+      - name: Build
+        run: xmake build
+
+      - name: Test
+        run: xmake test
+
+  format:
+    name: clang-format
+    # Pinned (not -latest): formatting must be reproducible, and the
+    # canonical version is clang-format 22 (see CODESTYLE.md).
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install clang-format 22
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y clang-format-22
+          clang-format-22 --version
+
+      - name: Check formatting
+        run: git ls-files '*.cpp' '*.hpp' | xargs clang-format-22 --dry-run --Werror

@@ -14,10 +14,9 @@ namespace agentsdk::a2a::http
  * Parameters: (method, path, body). The returned string is sent back
  * as the response body with ``Content-Type: application/json``.
  */
-using http_route_handler
-    = std::function<std::string (const std::string &method,
-                                 const std::string &path,
-                                 const std::string &body)>;
+using http_route_handler = std::function<std::string (const std::string &method,
+                                                      const std::string &path,
+                                                      const std::string &body)>;
 
 /**
  * Runs a blocking HTTP accept loop on ``0.0.0.0:port`` until
@@ -39,8 +38,7 @@ using http_route_handler
  * :return: ``true`` once the loop ran and exited cleanly; ``false``
  *          if the socket could not be created, bound or listening.
  */
-bool
-run_http_listener (std::atomic<bool> &running, uint16_t port,
-                   const char *log_name, const http_route_handler &route);
+bool run_http_listener (std::atomic<bool> &running, uint16_t port,
+                        const char *log_name, const http_route_handler &route);
 
 } // namespace agentsdk::a2a::http

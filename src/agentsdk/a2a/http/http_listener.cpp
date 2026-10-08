@@ -53,8 +53,8 @@ send_all (int fd, const std::string &data)
 {
   std::size_t sent = 0;
   while (sent < data.size ()) {
-    const ssize_t n = send (fd, data.data () + sent, data.size () - sent,
-                            MSG_NOSIGNAL);
+    const ssize_t n
+        = send (fd, data.data () + sent, data.size () - sent, MSG_NOSIGNAL);
     if (n <= 0) {
       return false;
     }
@@ -108,9 +108,9 @@ read_request (int fd)
   // Request line: METHOD SP PATH SP VERSION
   const std::string request_line = header.substr (0, line_end);
   const std::size_t sp1 = request_line.find (' ');
-  const std::size_t sp2
-      = (sp1 == std::string::npos) ? std::string::npos
-                                   : request_line.find (' ', sp1 + 1);
+  const std::size_t sp2 = (sp1 == std::string::npos)
+                              ? std::string::npos
+                              : request_line.find (' ', sp1 + 1);
   if (sp1 == std::string::npos || sp2 == std::string::npos) {
     return req;
   }
@@ -128,8 +128,7 @@ read_request (int fd)
     const std::string line = header.substr (pos, eol - pos);
     if (starts_with_ci (line, "Content-Length:")) {
       const std::size_t colon = line.find (':');
-      content_length
-          = std::strtoul (line.c_str () + colon + 1, nullptr, 10);
+      content_length = std::strtoul (line.c_str () + colon + 1, nullptr, 10);
     }
     pos = eol + 2;
   }
@@ -144,8 +143,8 @@ read_request (int fd)
   while (req.body.size () < content_length) {
     char buf[4096];
     const std::size_t remaining = content_length - req.body.size ();
-    const std::size_t chunk = remaining < sizeof (buf) ? remaining
-                                                       : sizeof (buf);
+    const std::size_t chunk
+        = remaining < sizeof (buf) ? remaining : sizeof (buf);
     const ssize_t n = recv (fd, buf, chunk, 0);
     if (n <= 0) {
       return req;
@@ -186,8 +185,7 @@ run_http_listener (std::atomic<bool> &running, uint16_t port,
   }
 
   if (listen (listen_fd, 8) < 0) {
-    spdlog::error ("{} failed to listen: {}", log_name,
-                   std::strerror (errno));
+    spdlog::error ("{} failed to listen: {}", log_name, std::strerror (errno));
     close (listen_fd);
     return false;
   }
@@ -220,13 +218,14 @@ run_http_listener (std::atomic<bool> &running, uint16_t port,
     if (req.ok) {
       spdlog::debug ("{} {} {}", log_name, req.method, req.path);
       const std::string body = route (req.method, req.path, req.body);
-      const std::string response
-          = "HTTP/1.1 200 OK\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: " + std::to_string (body.size ())
-          + "\r\n"
-            "Connection: close\r\n"
-            "\r\n" + body;
+      const std::string response = "HTTP/1.1 200 OK\r\n"
+                                   "Content-Type: application/json\r\n"
+                                   "Content-Length: "
+                                   + std::to_string (body.size ())
+                                   + "\r\n"
+                                     "Connection: close\r\n"
+                                     "\r\n"
+                                   + body;
       send_all (client_fd, response);
     } else {
       static constexpr const char k_bad[]

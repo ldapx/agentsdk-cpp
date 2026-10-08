@@ -69,6 +69,10 @@ documentation:
 
 ## Formatting
 
+- Format with `clang-format` using the repo's `.clang-format`.
+- The canonical version is **clang-format 22** (what CI enforces in
+  `.github/workflows/ci.yml`); other versions may disagree on edge cases,
+  so check with 22 before pushing.
 - Indent with 2 spaces.
 - Do not use tabs for indentation.
 - Put opening braces on their own line for functions, classes, structs,

@@ -1,5 +1,7 @@
 # AgentSDK C++
 
+[![CI](https://github.com/ldapx/agentsdk-cpp/actions/workflows/ci.yml/badge.svg)](https://github.com/ldapx/agentsdk-cpp/actions/workflows/ci.yml)
+
 A small, dependency-light C++20 SDK for talking to AI agents over three
 standard protocols:
 

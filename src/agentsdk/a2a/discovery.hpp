@@ -34,8 +34,7 @@ public:
    * :param base_url: The agent's base URL.
    * :return: The agent card, or an error.
    */
-  static result<agent_card, a2a_error>
-  fetch (const std::string &base_url);
+  static result<agent_card, a2a_error> fetch (const std::string &base_url);
 
   /**
    * Fetches with an in-memory TTL cache.

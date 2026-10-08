@@ -32,8 +32,8 @@ public:
 
   /** Get the current state of a task. */
   result<task, a2a_error> get_task (const std::string &task_id,
-                                           std::optional<int32_t> history_length
-                                           = std::nullopt);
+                                    std::optional<int32_t> history_length
+                                    = std::nullopt);
 
   /** List tasks with optional filtering. */
   result<list_tasks_response, a2a_error>
