@@ -2,15 +2,63 @@
 
 #include <spdlog/spdlog.h>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <unistd.h>
 #include <signal.h>
 #include <sys/wait.h>
+#endif
 
+#include <cctype>
 #include <cstring>
 
 namespace agentsdk
 {
+
+#ifdef _WIN32
+namespace
+{
+
+/**
+ * Quote one argv element for CreateProcess command lines.
+ *
+ * :param arg: Raw argument value.
+ * :return: ``arg`` quoted when it contains whitespace or quotes.
+ */
+std::string
+quote_arg (const std::string &arg)
+{
+  if (arg.empty ()) {
+    return "\"\"";
+  }
+  bool quote = false;
+  for (char c : arg) {
+    if (std::isspace (static_cast<unsigned char> (c)) || c == '"') {
+      quote = true;
+      break;
+    }
+  }
+  if (!quote) {
+    return arg;
+  }
+  std::string out = "\"";
+  for (char c : arg) {
+    if (c == '"') {
+      out += '\\';
+    }
+    out += c;
+  }
+  out += '"';
+  return out;
+}
+
+} // namespace
+#endif
 
 stdio_json_rpc::stdio_json_rpc () = default;
 
@@ -24,6 +72,70 @@ stdio_json_rpc::launch (const std::string &command,
     terminate ();
   }
 
+#ifdef _WIN32
+  // Windows: CreateProcess with redirected stdio.  Mirrors the POSIX
+  // fork/exec/pipe setup below (stdin/stdout pipes, stderr to NUL).
+  SECURITY_ATTRIBUTES sa{};
+  sa.nLength = sizeof (sa);
+  sa.bInheritHandle = TRUE;
+
+  HANDLE hStdinRead = nullptr, hStdinWrite = nullptr;
+  HANDLE hStdoutRead = nullptr, hStdoutWrite = nullptr;
+  if (!CreatePipe (&hStdinRead, &hStdinWrite, &sa, 0)
+      || !CreatePipe (&hStdoutRead, &hStdoutWrite, &sa, 0)) {
+    spdlog::error ("[stdio-json-rpc] Failed to create pipes");
+    return false;
+  }
+  // Only the child's ends are inherited.
+  SetHandleInformation (hStdinWrite, HANDLE_FLAG_INHERIT, 0);
+  SetHandleInformation (hStdoutRead, HANDLE_FLAG_INHERIT, 0);
+
+  HANDLE hNull
+      = CreateFileA ("NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                     &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+
+  std::string cmdline = command;
+  for (auto &a : args) {
+    cmdline += ' ';
+    cmdline += quote_arg (a);
+  }
+
+  STARTUPINFOA si{};
+  si.cb = sizeof (si);
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdInput = hStdinRead;
+  si.hStdOutput = hStdoutWrite;
+  si.hStdError = hNull ? hNull : GetStdHandle (STD_ERROR_HANDLE);
+  PROCESS_INFORMATION pi{};
+  const BOOL started
+      = CreateProcessA (nullptr, cmdline.data (), nullptr, nullptr, TRUE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+  CloseHandle (hStdinRead);
+  CloseHandle (hStdoutWrite);
+  if (hNull) {
+    CloseHandle (hNull);
+  }
+  if (!started) {
+    spdlog::error ("[stdio-json-rpc] Failed to exec {}: {}", command,
+                   static_cast<unsigned long> (GetLastError ()));
+    CloseHandle (hStdinWrite);
+    CloseHandle (hStdoutRead);
+    return false;
+  }
+
+  m_hStdinWrite = hStdinWrite;
+  m_hStdoutRead = hStdoutRead;
+  m_hProcess = pi.hProcess;
+  m_process_id = pi.dwProcessId;
+  CloseHandle (pi.hThread);
+  m_running.store (true);
+
+  m_read_thread = std::thread ([this] { read_loop (); });
+
+  spdlog::info ("[stdio-json-rpc] Process launched: {} (pid {})", command,
+                m_process_id);
+  return true;
+#else
   int stdin_pipe[2];
   int stdout_pipe[2];
 
@@ -88,6 +200,7 @@ stdio_json_rpc::launch (const std::string &command,
 
   spdlog::info ("[stdio-json-rpc] Process launched: {} (pid {})", command, pid);
   return true;
+#endif
 }
 
 std::string
@@ -195,6 +308,41 @@ stdio_json_rpc::terminate ()
 {
   m_running.store (false);
 
+#ifdef _WIN32
+  // Same escalation as POSIX below: EOF first, then kill.  Windows has no
+  // SIGTERM: TerminateProcess is the only step, and closing the process
+  // handle reaps it (no zombies on Windows).
+  if (m_hProcess) {
+    HANDLE proc = static_cast<HANDLE> (m_hProcess);
+
+    if (m_hStdinWrite) {
+      CloseHandle (static_cast<HANDLE> (m_hStdinWrite));
+      m_hStdinWrite = nullptr;
+    }
+
+    if (!wait_for_process (proc, std::chrono::milliseconds{ 200 })) {
+      TerminateProcess (proc, 1);
+      WaitForSingleObject (proc, INFINITE);
+    }
+    CloseHandle (proc);
+    m_hProcess = nullptr;
+  } else if (m_hStdinWrite) {
+    CloseHandle (static_cast<HANDLE> (m_hStdinWrite));
+    m_hStdinWrite = nullptr;
+  }
+
+  // Join before closing the stdout pipe, mirroring the POSIX EBADF note.
+  if (m_read_thread.joinable ()) {
+    m_read_thread.join ();
+  }
+
+  if (m_hStdoutRead) {
+    CloseHandle (static_cast<HANDLE> (m_hStdoutRead));
+    m_hStdoutRead = nullptr;
+  }
+
+  complete_all_pending ();
+#else
   // Graceful shutdown, per the MCP stdio guidance: close stdin so a
   // well-behaved server sees EOF and exits, escalate to SIGTERM and then
   // SIGKILL only if it lingers.  The child is always reaped so no zombie
@@ -233,8 +381,10 @@ stdio_json_rpc::terminate ()
 
   // Unblock callers waiting for responses that will never arrive.
   complete_all_pending ();
+#endif
 }
 
+#ifndef _WIN32
 bool
 stdio_json_rpc::wait_for_exit (pid_t pid, std::chrono::milliseconds timeout)
 {
@@ -249,6 +399,17 @@ stdio_json_rpc::wait_for_exit (pid_t pid, std::chrono::milliseconds timeout)
   int status = 0;
   return waitpid (pid, &status, WNOHANG) == pid;
 }
+#else
+bool
+stdio_json_rpc::wait_for_process (void *process,
+                                  std::chrono::milliseconds timeout)
+{
+  const auto ms = timeout.count ();
+  const DWORD wait_ms = ms < 0 ? 0 : static_cast<DWORD> (ms);
+  return WaitForSingleObject (static_cast<HANDLE> (process), wait_ms)
+         == WAIT_OBJECT_0;
+}
+#endif
 
 void
 stdio_json_rpc::read_loop ()
@@ -257,12 +418,21 @@ stdio_json_rpc::read_loop ()
   char chunk[4096];
 
   while (m_running.load ()) {
+#ifdef _WIN32
+    DWORD n = 0;
+    if (!ReadFile (static_cast<HANDLE> (m_hStdoutRead), chunk,
+                   sizeof (chunk) - 1, &n, nullptr)
+        || n == 0) {
+      break;
+    }
+#else
     ssize_t n = read (m_stdout_fd, chunk, sizeof (chunk) - 1);
     if (n <= 0) {
       if (n < 0 && errno == EINTR)
         continue;
       break;
     }
+#endif
 
     chunk[n] = '\0';
     buffer.append (chunk, static_cast<size_t> (n));
@@ -373,6 +543,26 @@ void
 stdio_json_rpc::write_line (const std::string &line)
 {
   std::lock_guard<std::mutex> lock (m_write_mutex);
+#ifdef _WIN32
+  HANDLE out = static_cast<HANDLE> (m_hStdinWrite);
+  if (!out) {
+    return;
+  }
+
+  std::string msg = line + "\n";
+  std::size_t written = 0;
+  while (written < msg.size ()) {
+    DWORD n = 0;
+    if (!WriteFile (out, msg.c_str () + written,
+                    static_cast<DWORD> (msg.size () - written), &n, nullptr)
+        || n == 0) {
+      spdlog::error ("[stdio-json-rpc] Write to stdin failed: {}",
+                     static_cast<unsigned long> (GetLastError ()));
+      break;
+    }
+    written += n;
+  }
+#else
   if (m_stdin_fd < 0)
     return;
 
@@ -390,6 +580,7 @@ stdio_json_rpc::write_line (const std::string &line)
     }
     written += n;
   }
+#endif
 }
 
 } // namespace agentsdk

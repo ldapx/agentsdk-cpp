@@ -153,11 +153,27 @@ private:
    *
    * Reaps the child on success.  Returns ``true`` if the child exited.
    */
+#ifndef _WIN32
   static bool wait_for_exit (pid_t pid, std::chrono::milliseconds timeout);
+#else
+  // Windows has no pid_t/signal/waitpid: the child is a HANDLE and waiting
+  // is a single WaitForSingleObject.  The handle type stays void* so this
+  // header remains windows.h-free.
+  static bool wait_for_process (void *process,
+                                std::chrono::milliseconds timeout);
+#endif
 
+#ifdef _WIN32
+  // Child process and pipe HANDLEs, stored as void* (see above).
+  void *m_hProcess = nullptr;
+  void *m_hStdinWrite = nullptr;
+  void *m_hStdoutRead = nullptr;
+  std::uint32_t m_process_id = 0;
+#else
   int m_stdin_fd = -1;
   int m_stdout_fd = -1;
   int m_agent_pid = -1;
+#endif
 
   std::thread m_read_thread;
 

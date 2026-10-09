@@ -4,7 +4,11 @@
 #include <spdlog/spdlog.h>
 
 #include <cstdlib>
+#ifdef _WIN32
+#include <io.h> // _access
+#else
 #include <unistd.h>
+#endif
 
 namespace agentsdk::acp
 {
@@ -107,8 +111,15 @@ acp_agent_manager::find_in_path (const std::string &name, std::string &out_path)
   std::string paths (path_env);
   size_t start = 0;
 
+#ifdef _WIN32
+  // Windows separates PATH with ';' (and executables carry .exe).
+  constexpr char path_sep = ';';
+#else
+  constexpr char path_sep = ':';
+#endif
+
   while (start < paths.size ()) {
-    auto pos = paths.find (':', start);
+    auto pos = paths.find (path_sep, start);
     std::string dir;
     if (pos == std::string::npos) {
       dir = paths.substr (start);
@@ -126,6 +137,15 @@ acp_agent_manager::find_in_path (const std::string &name, std::string &out_path)
       out_path = candidate;
       return true;
     }
+#ifdef _WIN32
+    // CreateProcess resolves .exe itself, but discovery must test the
+    // real file.  Forward slashes work fine in Win32 paths.
+    candidate = dir + "/" + name + ".exe";
+    if (is_executable (candidate)) {
+      out_path = candidate;
+      return true;
+    }
+#endif
   }
 
   return false;
@@ -134,7 +154,13 @@ acp_agent_manager::find_in_path (const std::string &name, std::string &out_path)
 bool
 acp_agent_manager::is_executable (const std::string &path)
 {
+#ifdef _WIN32
+  // No X_OK on Windows: existence (plus the .exe probing above) is the
+  // closest equivalent.
+  return _access (path.c_str (), 0) == 0;
+#else
   return access (path.c_str (), X_OK) == 0;
+#endif
 }
 
 } // namespace agentsdk::acp
