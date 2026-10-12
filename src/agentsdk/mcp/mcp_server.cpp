@@ -4,11 +4,22 @@
 
 #include <spdlog/spdlog.h>
 
-#include <sys/select.h>
-#include <unistd.h>
-
-#include <cerrno>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <iostream>
+#include <mutex>
+#include <thread>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <cerrno>
+#include <unistd.h>
+#endif
 
 namespace agentsdk::mcp
 {
@@ -16,59 +27,121 @@ namespace agentsdk::mcp
 namespace
 {
 
-// Unbuffered stdin line reader shared by run() and the send_request pump
-// (both live on the same thread).  iostream buffering must not be used
-// here: a buffered-ahead line would be invisible to select() and could
-// stall the pump while data is already available.
+// Portable stdin line pump shared by run() and the send_request pump (both
+// live on the same consumer thread).
+//
+// A dedicated reader thread performs blocking unbuffered reads on stdin,
+// splits the byte stream on '\n' and pushes complete lines into a queue.
+// Consumers pop with an optional deadline.
+//
+// NB: fread() must NOT be used here: it blocks until its full request is
+// satisfied (or EOF), so a single line kept open-ended would never be
+// delivered.  Unbuffered ::read()/ReadFile() return as soon as any bytes
+// are available, which is what the line pump needs.
+struct stdin_pump
+{
+  std::mutex mutex;
+  std::condition_variable cv;
+  std::deque<std::string> queue;
+  std::atomic<bool> eof{ false };
+  std::thread thread;
+  std::atomic<bool> started{ false };
+
+  void
+  ensure_started ()
+  {
+    bool expected = false;
+    if (!started.compare_exchange_strong (expected, true)) {
+      return;
+    }
+    thread = std::thread ([this] { reader_loop (); });
+    thread.detach ();
+  }
+
+  void
+  reader_loop ()
+  {
+    std::string carry;
+    char chunk[4096];
+    while (true) {
+#ifdef _WIN32
+      DWORD n = 0;
+      BOOL ok = ReadFile (GetStdHandle (STD_INPUT_HANDLE), chunk,
+                          sizeof (chunk), &n, nullptr);
+      if (!ok || n == 0) {
+        eof.store (true);
+        cv.notify_all ();
+        return;
+      }
+      carry.append (chunk, n);
+#else
+      ssize_t n = ::read (STDIN_FILENO, chunk, sizeof (chunk));
+      if (n == 0) {
+        eof.store (true);
+        cv.notify_all ();
+        return; // EOF.
+      }
+      if (n < 0) {
+        if (errno == EINTR) {
+          continue;
+        }
+        eof.store (true);
+        cv.notify_all ();
+        return;
+      }
+      carry.append (chunk, static_cast<size_t> (n));
+#endif
+      size_t start = 0;
+      while (true) {
+        size_t pos = carry.find ('\n', start);
+        if (pos == std::string::npos) {
+          break;
+        }
+        std::string line = carry.substr (start, pos - start);
+        start = pos + 1;
+        {
+          std::lock_guard<std::mutex> lock (mutex);
+          queue.push_back (std::move (line));
+        }
+        cv.notify_one ();
+      }
+      if (start > 0) {
+        carry.erase (0, start);
+      }
+    }
+  }
+};
+
+stdin_pump &
+global_stdin_pump ()
+{
+  static stdin_pump pump;
+  return pump;
+}
+
 bool
 stdin_read_line (std::string &out,
                  const std::chrono::steady_clock::time_point &deadline,
                  bool infinite)
 {
-  thread_local std::string buffer;
-
-  while (true) {
-    auto pos = buffer.find ('\n');
-    if (pos != std::string::npos) {
-      out = buffer.substr (0, pos);
-      buffer.erase (0, pos + 1);
-      return true;
-    }
-
-    fd_set fds;
-    FD_ZERO (&fds);
-    FD_SET (STDIN_FILENO, &fds);
-    struct timeval tv;
-    struct timeval *tvp = nullptr;
-    if (!infinite) {
-      auto remaining = deadline - std::chrono::steady_clock::now ();
-      if (remaining <= std::chrono::steady_clock::duration::zero ()) {
-        return false; // Timeout.
+  stdin_pump &pump = global_stdin_pump ();
+  pump.ensure_started ();
+  std::unique_lock<std::mutex> lock (pump.mutex);
+  while (pump.queue.empty () && !pump.eof.load ()) {
+    if (infinite) {
+      pump.cv.wait (lock);
+    } else {
+      if (pump.cv.wait_until (lock, deadline) == std::cv_status::timeout) {
+        return false;
       }
-      auto us
-          = std::chrono::duration_cast<std::chrono::microseconds> (remaining);
-      tv.tv_sec = static_cast<long> (us.count () / 1000000);
-      tv.tv_usec = static_cast<long> (us.count () % 1000000);
-      tvp = &tv;
     }
-    int ready = ::select (STDIN_FILENO + 1, &fds, nullptr, nullptr, tvp);
-    if (ready < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      return false;
-    }
-    if (ready == 0) {
-      return false; // Timeout.
-    }
-
-    char chunk[4096];
-    ssize_t n = ::read (STDIN_FILENO, chunk, sizeof (chunk));
-    if (n <= 0) {
-      return false; // EOF or error.
-    }
-    buffer.append (chunk, static_cast<size_t> (n));
   }
+  if (!pump.queue.empty ()) {
+    out = std::move (pump.queue.front ());
+    pump.queue.pop_front ();
+    return true;
+  }
+  return false; // EOF or error.
 }
 
 } // namespace
@@ -113,7 +186,7 @@ mcp_server::handle_line (const std::string &line)
   auto doc = parser.parse (line);
   if (doc.error ()) {
     spdlog::warn ("[mcp-server] Invalid JSON message");
-    return std::nullopt;
+    return envelope_error ("null", PARSE_ERROR, "Invalid JSON");
   }
 
   auto id_el = doc["id"];
